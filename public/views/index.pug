@@ -1,0 +1,22 @@
+doctype html
+html(lang='en')
+    head
+        title ShardFiles
+        link(href='https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css', rel='stylesheet')
+        link(href='../css/stylesheet.css', rel='stylesheet')
+        script(src='/socket.io/socket.io.js')
+        script(src='../js/script.js')
+    body
+        div.row
+            div#container.text-center
+                h3#nodeId= 'Node ' + nodeId
+                if nodeId === idLeader
+                    h3#leader= 'This is the leader node'
+                else 
+                    h3#leader= 'Node ' + idLeader + ' is the leader'
+
+        div.row
+            div.col-3
+            div.main.col-6.offset-3
+                ul(class='list-group' id='log-list')
+                    li.list-group-item.text-center Server Logs

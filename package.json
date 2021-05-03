@@ -1,0 +1,22 @@
+{
+  "name": "ShardFiles",
+  "description": "ShardFiles is a distributed file management system. Its purpose is to provide quick and reliable access to large files.",
+  "version": "0.1.0",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "axios": "^0.19.2",
+    "body-parser": "^1.19.0",
+    "express": "^4.17.1",
+    "socket.io": "^2.3.0",
+    "pug": "^2.0.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kanushka/ShardFiles.git"
+  },
+  "keywords": [],
+  "author": "Kanushka Gayan",
+  "license": ""
+}
