@@ -12,6 +12,10 @@ socket.on('newLeader', (leaderId) => {
     document.getElementById('leader').innerHTML = `Node ${leaderId} is the leader`;
 });
 
+socket.on('newLearner', (learnerId) => {
+    document.getElementById('learner').innerHTML = `Node ${learnerId} is the learner`;
+});
+
 socket.on('disconnect', () => {
     socket.close();
     console.log('Socket connection closed!');

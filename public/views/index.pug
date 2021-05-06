@@ -15,8 +15,19 @@ html(lang='en')
                 else 
                     h3#leader= 'Node ' + idLeader + ' is the leader'
 
+                if nodeId === idLearner
+                    h6#leader= 'This is the learner node'
+                else 
+                    h6#learner= 'Node ' + idLearner + ' is the learner'
+
         div.row
             div.col-3
             div.main.col-6.offset-3
                 ul(class='list-group' id='log-list')
                     li.list-group-item.text-center Server Logs
+        div.row
+            div.col-3
+            div.main.col-6.offset-3
+                form(method='post', action='/upload' enctype='multipart/form-data')
+                    input(type='file', name='uploadFile')
+                    input(type='submit', name='uploadFile', value='Upload File')
