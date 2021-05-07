@@ -4,6 +4,7 @@ const express = require('express');
 const axios = require('axios');
 const path = require('path');
 const splitFile = require('split-file');
+const CryptoJS = require("crypto-js");
 var FormData = require('form-data');
 var fs = require('fs');
 
@@ -15,7 +16,7 @@ const io = require('socket.io')(server);
 
 const addresses = require('./buildHosts').addresses;
 
-const nodeChunkList = new Map();
+const nodeChunksMap = new Map();
 
 var fileStorage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -112,6 +113,14 @@ app.post('/newLearner', async (req, res) => {
     io.emit('newLearner', learnerId);
 });
 
+app.post('/chunk/metadata', (req, res) => {
+    handleRequest(req);
+    sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} send chunk metadata`);
+    updateNodeChuckMap(req.body.chunkMap);
+    console.log(`learner chunk table >>> `, nodeChunksMap);
+    res.status(200).send('ok');
+});
+
 app.post('/upload', fileUpload.single('uploadFile'), function (req, res, next) {
     handleUploadedFile(req.file.path);
     res.send("File upload successfully");
@@ -127,14 +136,14 @@ app.post('/upload/chunk', chunkUpload.single('chunk'), function (req, res, next)
         path: req.file.path,
     };
 
-    if (nodeChunkList.has(key)) {
-        let fileInfo = nodeChunkList.get(key);
-        nodeChunkList.set(key, [ ...fileInfo, chunkInfo ]);
+    if (nodeChunksMap.has(key)) {
+        let fileInfo = nodeChunksMap.get(key);
+        nodeChunksMap.set(key, [ ...fileInfo, chunkInfo ]);
     } else {
-        nodeChunkList.set(key, [ chunkInfo ]);
+        nodeChunksMap.set(key, [ chunkInfo ]);
     }
 
-    console.log(`nodeChunkList >>>`, nodeChunkList);
+    console.log(`nodeChunksMap >>>`, nodeChunksMap);
     // res.send("File upload successfully");
 });
 
@@ -237,45 +246,46 @@ function handleRequest(req) {
     console.log(`${new Date().toLocaleString()} - Handle request in ${req.method}: ${req.url} by ${req.hostname}`);
 }
 
-async function setNewLearner(id=learnerId) {
+async function setNewLearner(id = 0) {
     console.log(`checking NewLearner >>>`, id);
     try {
-        let response = await axios.post(servers.get(id) + '/ping', { learnerId:id });
+        let response = await axios.post(servers.get(id) + '/ping', { learnerId: id });
         if (response.data.serverStatus === 'ok') {
             servers.forEach(async (value) => await axios.post(value + '/newLearner', { idLearner: id }));
             io.emit('newLearner', id);
             console.log(`set NewLearner >>>`, id);
             return;
-        } 
+        }
     } catch (error) {
         console.log(`skip learner selection node >>>`, learnerId);
-        if((id+1) < leaderId) setNewLearner(id+1)
+        if ((id + 1) < leaderId) setNewLearner(id + 1);
     }
 }
 
 function handleUploadedFile(filePath) {
     let activeNodeList = [];
-
+    if (nodeId !== leaderId && nodeId === learnerId) {
+        console.error(`only leader node can upload files`);
+        return;
+    }
     console.log(`servers >>>`, servers);
-    new Promise((resolve, reject) => {
-        console.log(`servers inside >>>`, servers);
+    new Promise((resolve) => {
         let pingCount = 0;
         servers.forEach(async (value, key) => {
             try {
-                if (key !== nodeId) {
+                if (key !== leaderId && key !== learnerId) {
                     console.log(`ping >>>`, value);
                     let response = await axios.post(value + '/ping', { nodeId });
                     console.log(`response >>>`, value);
                     if (response.data.serverStatus === 'ok') {
                         activeNodeList.push(value);
-                        console.log(`response ping resolve >>>`, ++pingCount, (pingCount + 1) >= servers.size);
-                        if (pingCount + 1 >= servers.size) resolve();
+                        ++pingCount;
+                        if (pingCount + 2 >= servers.size) resolve();
                     }
                 }
             } catch (error) {
-                // console.log(`error >>>`, error);
-                console.log(`error ping resolve >>>`, ++pingCount, (pingCount + 1) >= servers.size);
-                if (pingCount + 1 >= servers.size) resolve();
+                ++pingCount;
+                if (pingCount + 2 >= servers.size) resolve();
             }
         });
     }).then(() => {
@@ -286,31 +296,69 @@ function handleUploadedFile(filePath) {
         }
 
         splitFile.splitFile(path.resolve(filePath), chunkCount)
-            .then((chunkNames) => {
+            .then(async (chunkNames) => {
                 console.log(chunkNames);
 
-                // TODO: save chunk address - table
-
-
-                const nodeChunksMap = new Map(); // TODO: save this map in local file or db
+                // TODO: save this map in local file or db
                 // send two chunk files for each node
                 activeNodeList.forEach((node, index) => {
                     let firstChunkIndex = index;
                     let secondChunkIndex = index == 0 ? chunkNames.length - 1 : index - 1;
 
-                    nodeChunksMap.set(node, [ chunkNames[ firstChunkIndex ], chunkNames[ secondChunkIndex ] ]);
+                    // save chunk info in memory
+                    nodeChunksMap.set(node, [
+                        {
+                            name: chunkNames[ firstChunkIndex ].split('/').pop(),
+                            part: chunkNames[ firstChunkIndex ].split('-').pop(),
+                            path: path.resolve("uploads", chunkNames[ firstChunkIndex ]),
+                            hash: generateHashForChunk(path.resolve("uploads", chunkNames[ firstChunkIndex ]))
+                        },
+                        {
+                            name: chunkNames[ secondChunkIndex ].split('/').pop(),
+                            part: chunkNames[ secondChunkIndex ].split('-').pop(),
+                            path: path.resolve("uploads", chunkNames[ secondChunkIndex ]),
+                            hash: generateHashForChunk(path.resolve("uploads", chunkNames[ secondChunkIndex ]))
+                        }
+                    ]);
+
                     sendFileToNode(node, path.resolve("uploads", chunkNames[ firstChunkIndex ]));
                     sendFileToNode(node, path.resolve("uploads", chunkNames[ secondChunkIndex ]));
                 });
 
-                // TODO: send map/table to learner NODE
-                console.log(`nodeChunksMap >>> `, nodeChunksMap);
+                console.log(`sending nodeChunksMap to learner ${learnerId} >>> `, nodeChunksMap);
+
+                await axios.post(servers.get(learnerId) + '/chunk/metadata', { chunkMap: mapToObj(nodeChunksMap), nodeId });
+                // TODO: handle learner node update response
 
             })
             .catch((err) => {
                 console.log('Error: ', err);
             });
     });
+}
+
+function mapToObj(map) {
+    const obj = {};
+    map.forEach((value, key) => {
+        obj[ key ] = value;
+    });
+    return obj;
+}
+
+function objToMap(obj) {
+    return new Map(Object.entries(obj));
+}
+
+function updateNodeChuckMap(obj) {
+    for (const [ key, value ] of Object.entries(obj)) {
+        nodeChunksMap.set(key, value);
+    }
+}
+
+function generateHashForChunk(filePath) {
+    const fileData = fs.readFileSync(filePath);
+    console.log(fileData);
+    return CryptoJS.MD5(fileData).toString();
 }
 
 function sendFileToNode(nodeAddress, chunkPath) {
