@@ -75,6 +75,12 @@ app.post('/ping', (req, res) => {
     res.status(200).send({ serverStatus: status });
 });
 
+app.post('/ping/learner', (req, res) => {
+    handleRequest(req);
+    sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} it's checking learner node`);
+    res.status(200).send({ serverStatus: status, isLearner: nodeId == learnerId});
+});
+
 app.post('/isCoordinator', (req, res) => {
     handleRequest(req);
     res.status(200).send({ isCoor: isCoordinator });
@@ -249,12 +255,19 @@ function handleRequest(req) {
 async function setNewLearner(id = 0) {
     console.log(`checking NewLearner >>>`, id);
     try {
-        let response = await axios.post(servers.get(id) + '/ping', { learnerId: id });
+        let response = await axios.post(servers.get(id) + '/ping/learner', { nodeId });
         if (response.data.serverStatus === 'ok') {
-            servers.forEach(async (value) => await axios.post(value + '/newLearner', { idLearner: id }));
-            io.emit('newLearner', id);
-            console.log(`set NewLearner >>>`, id);
-            return;
+            if(response.data.isLearner){
+                // learner node already exist
+                learnerId = id;
+                console.log(`leaner setup in leader node >>>`, id);
+                return;
+            }else{
+                servers.forEach(async (value) => await axios.post(value + '/newLearner', { idLearner: id }));
+                console.log(`set NewLearner >>>`, id);
+                io.emit('newLearner', id);
+                return;
+            }
         }
     } catch (error) {
         console.log(`skip learner selection node >>>`, learnerId);
@@ -351,7 +364,12 @@ function objToMap(obj) {
 
 function updateNodeChuckMap(obj) {
     for (const [ key, value ] of Object.entries(obj)) {
-        nodeChunksMap.set(key, value);
+        if (nodeChunksMap.has(key)) {
+            const nodeFiles = nodeChunksMap.get(key);
+            nodeChunksMap.set(key, [...nodeFiles, ...value])
+        }else{
+            nodeChunksMap.set(key, value);
+        }
     }
 }
 
