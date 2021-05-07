@@ -15,6 +15,8 @@ const io = require('socket.io')(server);
 
 const addresses = require('./buildHosts').addresses;
 
+const nodeChunkList = new Map();
+
 var fileStorage = multer.diskStorage({
     destination: function (req, file, cb) {
         cb(null, 'uploads');
@@ -116,8 +118,23 @@ app.post('/upload', fileUpload.single('uploadFile'), function (req, res, next) {
 });
 
 app.post('/upload/chunk', chunkUpload.single('chunk'), function (req, res, next) {
-    console.log(`/upload/chunk >>>`, req);
-    // handleUploadedFile(req.file.path);
+    // console.log(`/upload/chunk >>>`, req);
+    const fileName = req.file.originalname;
+    const key = fileName.split('-')[ 0 ];
+    const chunkInfo = {
+        name: fileName,
+        part: fileName.split('-').pop(),
+        path: req.file.path,
+    };
+
+    if (nodeChunkList.has(key)) {
+        let fileInfo = nodeChunkList.get(key);
+        nodeChunkList.set(key, [ ...fileInfo, chunkInfo ]);
+    } else {
+        nodeChunkList.set(key, [ chunkInfo ]);
+    }
+
+    console.log(`nodeChunkList >>>`, nodeChunkList);
     // res.send("File upload successfully");
 });
 
@@ -220,18 +237,19 @@ function handleRequest(req) {
     console.log(`${new Date().toLocaleString()} - Handle request in ${req.method}: ${req.url} by ${req.hostname}`);
 }
 
-async function setNewLearner() {
-    while (true) {
-        console.log(`checking NewLearner >>>`, learnerId)
-        let response = await axios.post(servers.get(leaderId) + '/ping', { learnerId });
+async function setNewLearner(id=learnerId) {
+    console.log(`checking NewLearner >>>`, id);
+    try {
+        let response = await axios.post(servers.get(id) + '/ping', { learnerId:id });
         if (response.data.serverStatus === 'ok') {
-            io.emit('newLearner', learnerId);
-            servers.forEach(async (value) => await axios.post(value + '/newLearner', { idLearner: learnerId }));
-            console.log(`set NewLearner >>>`, learnerId)
+            servers.forEach(async (value) => await axios.post(value + '/newLearner', { idLearner: id }));
+            io.emit('newLearner', id);
+            console.log(`set NewLearner >>>`, id);
             return;
-        } else if(++learnerId >= leaderId){
-            return;
-        }
+        } 
+    } catch (error) {
+        console.log(`skip learner selection node >>>`, learnerId);
+        if((id+1) < leaderId) setNewLearner(id+1)
     }
 }
 
@@ -250,12 +268,14 @@ function handleUploadedFile(filePath) {
                     console.log(`response >>>`, value);
                     if (response.data.serverStatus === 'ok') {
                         activeNodeList.push(value);
+                        console.log(`response ping resolve >>>`, ++pingCount, (pingCount + 1) >= servers.size);
+                        if (pingCount + 1 >= servers.size) resolve();
                     }
                 }
-                console.log(`count >>>`, ++pingCount, servers.size);
-                if (pingCount === servers.size) resolve();
             } catch (error) {
-                console.log(`error >>>`, error);
+                // console.log(`error >>>`, error);
+                console.log(`error ping resolve >>>`, ++pingCount, (pingCount + 1) >= servers.size);
+                if (pingCount + 1 >= servers.size) resolve();
             }
         });
     }).then(() => {
