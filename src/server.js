@@ -4,21 +4,30 @@ const express = require('express');
 const axios = require('axios');
 const path = require('path');
 const splitFile = require('split-file');
-const CryptoJS = require("crypto-js");
+var multer = require('multer');
 var FormData = require('form-data');
 var fs = require('fs');
-
-var multer = require('multer');
-
 const app = express();
 const server = require('http').createServer(app);
 const io = require('socket.io')(server);
 
-const addresses = require('./buildHosts').addresses;
+const addresses = require('./configs').addresses;
+const utils = require('./utils');
+const docs = require('./docs');
 
-var nodeChunksMap = new Map();
-var fileList = [];
+// server configuration
+let baseIndexServer = process.env.NODE_INDEX || 0;
+let nodeId = utils.getId(addresses[ baseIndexServer ].port);
+let leaderId = utils.getId(Math.max(...calculateLeader()));
+let learnerId = utils.getId(Math.min(...calculateLeader()));
+let status = 'ok';
+let isCoordinator = true;
+let isUP = true;
+let check = 'on';
+let nodeChunksMap = new Map();
+let fileList = [];
 
+// storage configurations
 var fileStorage = multer.diskStorage({
     destination: function (req, file, cb) {
         cb(null, 'uploads');
@@ -39,33 +48,23 @@ var chunkStorage = multer.diskStorage({
 var fileUpload = multer({ storage: fileStorage });
 var chunkUpload = multer({ storage: chunkStorage });
 
-// Server configuration
-let baseIndexServer = process.env.NODE_INDEX || 0;
-let nodeId = getId(addresses[ baseIndexServer ].port);
-let leaderId = getId(Math.max(...calculateLeader()));
-let learnerId = getId(Math.min(...calculateLeader()));
-let status = 'ok';
-let isCoordinator = true;
-let isUP = true;
-let check = 'on';
-
-// Servers instance
+// servers instance
 const servers = new Map();
 Object.keys(addresses).forEach(key => {
     if (Number(key) !== baseIndexServer) {
-        servers.set(getId(addresses[ key ].port), `http://${addresses[ key ].host}:${addresses[ key ].port}`);
+        servers.set(utils.getId(addresses[ key ].port), `http://${addresses[ key ].host}:${addresses[ key ].port}`);
     }
 });
 
-// App
+// app
 app.use(express.json());
-app.use(express.urlencoded());
+app.use(express.urlencoded({ extended: true }));
 app.engine('pug', require('pug').__express);
 app.set('views', path.join(__dirname, '../public/views'));
 app.set('view engine', 'pug');
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Routes
+// routes
 app.get('/', function (req, res) {
     res.render('index', { nodeId, idLeader: leaderId, idLearner: learnerId });
 });
@@ -87,14 +86,14 @@ app.get('/learner/files', function (req, res) {
 });
 
 app.post('/ping', (req, res) => {
-    handleRequest(req);
-    sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} it's pinging me`);
+    utils.handleRequest(req);
+    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} it's pinging me`);
     res.status(200).send({ serverStatus: status });
 });
 
 app.post('/ping/learner', (req, res) => {
-    handleRequest(req);
-    sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} it's checking learner node`);
+    utils.handleRequest(req);
+    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} it's checking learner node`);
     if (nodeId == learnerId) {
         updateChuckMapFromNodeDoc();
     }
@@ -102,30 +101,30 @@ app.post('/ping/learner', (req, res) => {
 });
 
 app.post('/isCoordinator', (req, res) => {
-    handleRequest(req);
+    utils.handleRequest(req);
     res.status(200).send({ isCoor: isCoordinator });
 });
 
 app.post('/election', (req, res) => {
-    handleRequest(req);
+    utils.handleRequest(req);
     if (!isUP) {
-        sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} fallen leader`);
+        utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} fallen leader`);
         res.status(200).send({ accept: 'no' });
     } else {
-        sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} asked me if I am down, and I am not , I win, that is bullying`);
+        utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} asked me if I am down, and I am not , I win, that is bullying`);
         res.status(200).send({ accept: 'ok' });
     }
 });
 
 app.post('/putCoordinator', (req, res) => {
-    handleRequest(req);
+    utils.handleRequest(req);
     startElection();
-    sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} put me as coordinator`);
+    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} put me as coordinator`);
     res.status(200).send('ok');
 });
 
 app.post('/newLeader', async (req, res) => {
-    handleRequest(req);
+    utils.handleRequest(req);
     leaderId = req.body.idLeader;
     res.status(200).send('ok');
     io.emit('newLeader', leaderId);
@@ -133,7 +132,7 @@ app.post('/newLeader', async (req, res) => {
 });
 
 app.post('/newLearner', async (req, res) => {
-    handleRequest(req);
+    utils.handleRequest(req);
     learnerId = req.body.idLearner;
     if (learnerId == nodeId) {
         // update file list with learnerDoc
@@ -144,8 +143,8 @@ app.post('/newLearner', async (req, res) => {
 });
 
 app.post('/chunk/metadata', (req, res) => {
-    handleRequest(req);
-    sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} send chunk metadata`);
+    utils.handleRequest(req);
+    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} send chunk metadata`);
     updateNodeChuckMap(req.body.chunkMap);
     console.log(`learner chunk table >>> `, nodeChunksMap);
     res.status(200).send({ fileList });
@@ -153,12 +152,10 @@ app.post('/chunk/metadata', (req, res) => {
 
 app.post('/upload', fileUpload.single('uploadFile'), function (req, res, next) {
     handleUploadedFile(req.file.path);
-    // res.send("File upload successfully");
     res.redirect('files');
 });
 
 app.post('/upload/chunk', chunkUpload.single('chunk'), function (req, res, next) {
-    // console.log(`/upload/chunk >>>`, req);
     const fileName = req.file.originalname;
     const key = fileName.split('-')[ 0 ];
     const chunkInfo = {
@@ -174,11 +171,12 @@ app.post('/upload/chunk', chunkUpload.single('chunk'), function (req, res, next)
         nodeChunksMap.set(key, [ chunkInfo ]);
     }
 
-    console.log(`nodeChunksMap >>>`, nodeChunksMap);
-    updateDoc(getNodeDocName(), nodeChunksMap);
+    utils.printLog('info', `${fileName} chunck uploaded to node ${nodeId}`);
+    docs.updateDoc(utils.getNodeDocName(nodeId, learnerId), nodeChunksMap);
     res.status(200).send();
 });
 
+// server functions
 const checkLeader = async _ => {
     if (!isUP) {
         check = 'off';
@@ -188,17 +186,17 @@ const checkLeader = async _ => {
             let response = await axios.post(servers.get(leaderId) + '/ping', { nodeId });
 
             if (response.data.serverStatus === 'ok') {
-                sendMessage(`${new Date().toLocaleString()} - Ping to leader server ${leaderId}: ${response.data.serverStatus}`);
+                utils.sendMessage(io, `${new Date().toLocaleString()} - Ping to leader server ${leaderId}: ${response.data.serverStatus}`);
                 setTimeout(checkLeader, 12000);
             } else {
-                sendMessage(`${new Date().toLocaleString()} - Server leader  ${leaderId} down: ${response.data.serverStatus} New leader needed`);
+                utils.sendMessage(io, `${new Date().toLocaleString()} - Server leader  ${leaderId} down: ${response.data.serverStatus} New leader needed`);
                 checkCoordinator();
             }
         }
         catch (error) {
-            sendMessage(`${new Date().toLocaleString()} - Server leader  ${leaderId} down: New leader needed`);
+            utils.sendMessage(io, `${new Date().toLocaleString()} - Server leader  ${leaderId} down: New leader needed`);
+            utils.printLog('error', `leader ${leaderId} down, new leader needed`);
             checkCoordinator();
-            console.log(error);
         }
     }
 };
@@ -209,14 +207,14 @@ const checkCoordinator = _ => {
             let response = await axios.post(value + '/isCoordinator', { nodeId });
 
             if (response.data.isCoor === 'true') {
-                sendMessage(`${new Date().toLocaleString()} - server ${key} is doing the election`);
+                utils.sendMessage(io, `${new Date().toLocaleString()} - server ${key} is doing the election`);
                 return true;
             } else {
-                sendMessage(`${new Date().toLocaleString()} - server ${key} is not doing the election`);
+                utils.sendMessage(io, `${new Date().toLocaleString()} - server ${key} is not doing the election`);
             }
         }
         catch (error) {
-            console.log(error);
+            utils.printLog('error', `node ${key} is not responding`);
         }
     });
 
@@ -228,7 +226,7 @@ const checkCoordinator = _ => {
 const startElection = _ => {
     let someoneAnswer = false;
     isCoordinator = true;
-    sendMessage(`${new Date().toLocaleString()} - Coordinating the election`);
+    utils.sendMessage(io, `${new Date().toLocaleString()} - Coordinating the election`);
 
     servers.forEach(async (value, key) => {
         if (key > nodeId) {
@@ -241,7 +239,7 @@ const startElection = _ => {
                 }
             }
             catch (error) {
-                console.log(error);
+                utils.printLog('error', `node ${key} is not starting election`);
             }
         }
     });
@@ -249,17 +247,13 @@ const startElection = _ => {
     setTimeout(() => {
         if (!someoneAnswer) {
             leaderId = nodeId;
-            sendMessage(`${new Date().toLocaleString()} - I am leader`);
+            utils.sendMessage(io, `${new Date().toLocaleString()} - I am leader`);
             io.emit('newLeader', leaderId);
             servers.forEach(async (value) => await axios.post(value + '/newLeader', { idLeader: leaderId }));
             setNewLearner();
         }
     }, 5000);
 };
-
-function getId(server) {
-    return server - 10000;
-}
 
 function calculateLeader() {
     let ports = [];
@@ -269,24 +263,15 @@ function calculateLeader() {
     return ports;
 }
 
-function sendMessage(message) {
-    console.log(`Message: ${message}`);
-    io.emit('status', message);
-}
-
-function handleRequest(req) {
-    console.log(`${new Date().toLocaleString()} - Handle request in ${req.method}: ${req.url} by ${req.hostname}`);
-}
-
 async function setNewLearner(id = 0) {
-    console.log(`checking NewLearner >>>`, id);
     try {
+        utils.printLog('info', `checking... learner node ${key}`);
         let response = await axios.post(servers.get(id) + '/ping/learner', { nodeId });
         if (response.data.serverStatus === 'ok') {
             if (response.data.isLearner) {
                 // learner node already exist
                 learnerId = id;
-                console.log(`leaner setup in leader node >>>`, id);
+                utils.printLog('info', `accept already exist learner node ${key}`);
                 if (response.data.fileList && response.data.fileList.length > 0) {
                     // response.data.fileList.forEach(chunk => {
                     //     if (!fileList.includes(chunk.fileName)) {
@@ -298,13 +283,13 @@ async function setNewLearner(id = 0) {
                 return;
             } else {
                 servers.forEach(async (value) => await axios.post(value + '/newLearner', { idLearner: id }));
-                console.log(`set NewLearner >>>`, id);
                 io.emit('newLearner', id);
+                utils.printLog('success', `set node ${key} as new learner`);
                 return;
             }
         }
     } catch (error) {
-        console.log(`skip learner selection node >>>`, learnerId);
+        utils.printLog('info', `reject leaner request from node ${learnerId}`);
         if ((id + 1) < leaderId) setNewLearner(id + 1);
     }
 }
@@ -315,15 +300,12 @@ function handleUploadedFile(filePath) {
         console.error(`only leader node can upload files`);
         return;
     }
-    console.log(`servers >>>`, servers);
     new Promise((resolve) => {
         let pingCount = 0;
         servers.forEach(async (value, key) => {
             try {
                 if (key !== leaderId && key !== learnerId) {
-                    console.log(`ping >>>`, value);
                     let response = await axios.post(value + '/ping', { nodeId });
-                    console.log(`response >>>`, value);
                     if (response.data.serverStatus === 'ok') {
                         activeNodeList.push(value);
                         ++pingCount;
@@ -336,7 +318,6 @@ function handleUploadedFile(filePath) {
             }
         });
     }).then(() => {
-        console.log(`active node list >>>`, activeNodeList);
         let chunkCount = 1;
         if (activeNodeList.length > 2) {
             chunkCount = activeNodeList.length;
@@ -345,58 +326,54 @@ function handleUploadedFile(filePath) {
         splitFile.splitFile(path.resolve(filePath), chunkCount)
             .then((chunkNames) => {
                 const fileName = chunkNames[ 0 ].split('/').pop().split('.sf')[ 0 ];
-                // TODO: save this map in local file or db
+                const chunksDocData = new Map();
                 // send two chunk files for each node
                 activeNodeList.forEach((node, index) => {
                     let firstChunkIndex = index;
                     let secondChunkIndex = index == 0 ? chunkNames.length - 1 : index - 1;
 
-                    // save chunk info in memory
-                    nodeChunksMap.set(node, [
-                        {
-                            fileName: fileName,
-                            name: chunkNames[ firstChunkIndex ].split('/').pop(),
-                            part: chunkNames[ firstChunkIndex ].split('-').pop(),
-                            path: path.resolve("uploads", chunkNames[ firstChunkIndex ]),
-                            hash: generateHashForChunk(path.resolve("uploads", chunkNames[ firstChunkIndex ]))
-                        },
-                        {
-                            fileName: fileName,
-                            name: chunkNames[ secondChunkIndex ].split('/').pop(),
-                            part: chunkNames[ secondChunkIndex ].split('-').pop(),
-                            path: path.resolve("uploads", chunkNames[ secondChunkIndex ]),
-                            hash: generateHashForChunk(path.resolve("uploads", chunkNames[ secondChunkIndex ]))
-                        }
+                    chunksDocData.set(node, [
+                        docs.getChunkDocData(chunkNames[ firstChunkIndex ]),
+                        docs.getChunkDocData(chunkNames[ secondChunkIndex ]),
                     ]);
-
                     sendFileToNode(node, path.resolve("uploads", chunkNames[ firstChunkIndex ]));
                     sendFileToNode(node, path.resolve("uploads", chunkNames[ secondChunkIndex ]));
                 });
 
-                console.log(`sending nodeChunksMap to learner ${learnerId} >>> `, nodeChunksMap);
-
-                axios.post(servers.get(learnerId) + '/chunk/metadata', { chunkMap: mapToObj(nodeChunksMap), nodeId })
+                utils.printLog('info', `sending... docData to learner ${learnerId}`);
+                axios.post(servers.get(learnerId) + '/chunk/metadata', { chunkMap: utils.mapToObj(chunksDocData), nodeId })
                     .then(response => {
                         if (response.data.fileList && response.data.fileList.length > 0) {
                             fileList = response.data.fileList;
                             io.emit('fileUpdated', JSON.stringify(fileList));
-                            console.log(`file list updated >>> `, fileList);
+                            utils.printLog('success', `leader file name list updated`);
                         }
                     });
 
             })
             .catch((err) => {
-                console.log('Error: ', err);
+                utils.printLog('error', `file splitting went wrong`);
             });
     });
 }
 
-function mapToObj(map) {
-    const obj = {};
-    map.forEach((value, key) => {
-        obj[ key ] = value;
-    });
-    return obj;
+function sendFileToNode(nodeAddress, chunkPath) {
+    const form = new FormData();
+    form.append('chunk', fs.createReadStream(chunkPath));
+
+    const request_config = {
+        headers: {
+            // 'Authorization': `Bearer ${access_token}`,
+            ...form.getHeaders()
+        }
+    };
+
+    try {
+        utils.printLog('info', `sending chunk ${chunkPath.split('-').pop()} to node ${nodeAddress}`);
+        return axios.post(nodeAddress + '/upload/chunk', form, request_config);
+    } catch (error) {
+        utils.printLog('error', `sending chunk to node ${nodeAddress} gives errors`);
+    }
 }
 
 function updateNodeChuckMap(obj) {
@@ -409,50 +386,19 @@ function updateNodeChuckMap(obj) {
         }
     }
     updateFileList();
-    updateDoc(getNodeDocName(), nodeChunksMap);
-}
-
-function generateHashForChunk(filePath) {
-    const fileData = fs.readFileSync(filePath);
-    console.log(fileData);
-    return CryptoJS.MD5(fileData).toString();
-}
-
-function getNodeDocName() {
-    return (nodeId == learnerId) ? `learner-doc.txt` : `node-${nodeId}-doc.txt`;
+    docs.updateDoc(utils.getNodeDocName(nodeId, learnerId), nodeChunksMap);
 }
 
 function updateChuckMapFromNodeDoc() {
     if (nodeId != leaderId) {
-        const docName = getNodeDocName();
-        const dataMap = readDoc(docName);
+        const docName = utils.getNodeDocName(nodeId, learnerId);
+        const dataMap = docs.readDoc(docName);
         nodeChunksMap = dataMap;
-        console.log(`update nodeChunksMap with ${docName} doc >>>`);
 
         if (nodeId == learnerId) {
             updateFileList();
         }
     }
-}
-
-function readDoc(docName) {
-    console.log(`reading ${docName} doc >>>`);
-    try {
-        const dataObjString = fs.readFileSync(path.resolve("docs", docName));
-        const dataObj = JSON.parse(dataObjString);
-        const dataMap = new Map();
-        for (const [ key, value ] of Object.entries(dataObj)) {
-            dataMap.set(key, value);
-        }
-        return dataMap;
-    } catch (error) {
-        return new Map();
-    }
-}
-
-function updateDoc(docName, dataMap) {
-    fs.writeFileSync(path.resolve("docs", docName), JSON.stringify(mapToObj(dataMap)));
-    console.log(`updated ${docName} doc >>>`, dataMap);
 }
 
 function updateFileList() {
@@ -467,37 +413,18 @@ function updateFileList() {
     }
 }
 
-function sendFileToNode(nodeAddress, chunkPath) {
-    console.log(`sendFileToNode >>> `, nodeAddress, chunkPath);
-    const form = new FormData();
-    form.append('chunk', fs.createReadStream(chunkPath));
-
-    const request_config = {
-        headers: {
-            // 'Authorization': `Bearer ${access_token}`,
-            ...form.getHeaders()
-        }
-    };
-
-    // TODO: add await 
-    try {
-        console.log(`send file >>>`);
-        return axios.post(nodeAddress + '/upload/chunk', form, request_config);
-    } catch (error) {
-        console.log(`send file error>>>`, error);
-    }
-}
-
+// socket connection
 io.on('connection', (socket) => {
     socket.on('download', (fileName) => {
-        sendMessage(`${new Date().toLocaleString()} - requesting file ${fileName} from learner node ${learnerId}`);
+        utils.sendMessage(io, `${new Date().toLocaleString()} - requesting file ${fileName} from learner node ${learnerId}`);
 
     });
 });
 
+// start server
 server.listen(addresses[ baseIndexServer ].port, addresses[ baseIndexServer ].host);
-console.log(`App listening on http://${addresses[ baseIndexServer ].host}:${addresses[ baseIndexServer ].port}`);
+utils.printLog('header', `App listening on http://${addresses[ baseIndexServer ].host}:${addresses[ baseIndexServer ].port}`);
 
+// onload actions
 setTimeout(checkLeader, 3000);
-
 updateChuckMapFromNodeDoc();

@@ -1,7 +1,18 @@
 'use strict';
 
-exports.DEFAULT_HOST = '0.0.0.0';
+const defaultHost = '0.0.0.0';
+const defaultPort = 10000;
+const maxNumberOfNodes = 7; // include leader and learner nodes
 
-exports.DEFAULT_PORT = 10000;
+function getAddressList() {
+    const addressList = [];
+    for (let nodeId = 0; nodeId < maxNumberOfNodes; nodeId++) {
+        addressList.push({
+            host: defaultHost,
+            port: defaultPort + nodeId
+        });
+    }
+    return addressList;
+}
 
-exports.MAX_NUMBER_OF_NODES = 5
+exports.addresses = getAddressList();
