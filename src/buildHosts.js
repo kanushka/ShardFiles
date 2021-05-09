@@ -22,5 +22,13 @@ exports.addresses = [
     {
         host: baseHostUrl,
         port: 10004
+    },
+    {
+        host: baseHostUrl,
+        port: 10005
+    },
+    {
+        host: baseHostUrl,
+        port: 10006
     }
 ];

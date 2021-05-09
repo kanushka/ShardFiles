@@ -19,15 +19,18 @@ html(lang='en')
                     h6#leader= 'This is the learner node'
                 else 
                     h6#learner= 'Node ' + idLearner + ' is the learner'
-
+        if nodeId == idLeader
+            div.row
+                div.col-2
+                div.main.col-6
+                    form(method='post', action='/upload' enctype='multipart/form-data')
+                        input(type='file', name='uploadFile')
+                        input(type='submit', class='btn btn-outline-primary' name='uploadFile', value='Upload File')
+                div.main.col-1.offset-3
+                    a(href='files')
+                        button(type='button' class='btn btn-outline-primary') Storage
         div.row
             div.col-3
             div.main.col-6.offset-3
                 ul(class='list-group' id='log-list')
                     li.list-group-item.text-center Server Logs
-        div.row
-            div.col-3
-            div.main.col-6.offset-3
-                form(method='post', action='/upload' enctype='multipart/form-data')
-                    input(type='file', name='uploadFile')
-                    input(type='submit', name='uploadFile', value='Upload File')

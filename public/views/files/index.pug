@@ -1,0 +1,21 @@
+doctype html
+html(lang='en')
+    head
+        title ShardFiles - Files
+        link(href='https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css', rel='stylesheet')
+        link(href='../../css/stylesheet.css', rel='stylesheet')
+        script(src='/socket.io/socket.io.js')
+        script(src='../../js/script.js')
+    body
+        div.row
+            div#container.text-center
+                h3#nodeId= 'Node ' + nodeId
+                h3#title= 'Download Files'
+
+        div.row
+            div.col-6.offset-3
+                ul(class='file-group' id='file-list')
+                    if fileList && fileList.length > 0
+                        each file in fileList
+                            li= file
+                                 button(type='button' class='btn btn-link' onclick='downloadFile()') Download

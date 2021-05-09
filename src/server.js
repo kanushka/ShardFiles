@@ -16,7 +16,8 @@ const io = require('socket.io')(server);
 
 const addresses = require('./buildHosts').addresses;
 
-const nodeChunksMap = new Map();
+var nodeChunksMap = new Map();
+var fileList = [];
 
 var fileStorage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -69,6 +70,22 @@ app.get('/', function (req, res) {
     res.render('index', { nodeId, idLeader: leaderId, idLearner: learnerId });
 });
 
+app.get('/files', function (req, res) {
+    if (nodeId == leaderId) {
+        res.render('files/index', { nodeId, idLeader: leaderId, idLearner: learnerId, fileList });
+    } else {
+        res.status(404).type('txt').send('Not found');
+    }
+});
+
+app.get('/learner/files', function (req, res) {
+    if (nodeId == learnerId) {
+        res.status(200).send({ nodeId, fileList });
+    } else {
+        res.status(403).send({ error: 'im not a learner' });
+    }
+});
+
 app.post('/ping', (req, res) => {
     handleRequest(req);
     sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} it's pinging me`);
@@ -78,7 +95,10 @@ app.post('/ping', (req, res) => {
 app.post('/ping/learner', (req, res) => {
     handleRequest(req);
     sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} it's checking learner node`);
-    res.status(200).send({ serverStatus: status, isLearner: nodeId == learnerId});
+    if (nodeId == learnerId) {
+        updateChuckMapFromNodeDoc();
+    }
+    res.status(200).send({ serverStatus: status, isLearner: nodeId == learnerId, fileList });
 });
 
 app.post('/isCoordinator', (req, res) => {
@@ -115,6 +135,10 @@ app.post('/newLeader', async (req, res) => {
 app.post('/newLearner', async (req, res) => {
     handleRequest(req);
     learnerId = req.body.idLearner;
+    if (learnerId == nodeId) {
+        // update file list with learnerDoc
+        updateChuckMapFromNodeDoc();
+    }
     res.status(200).send('ok');
     io.emit('newLearner', learnerId);
 });
@@ -124,12 +148,13 @@ app.post('/chunk/metadata', (req, res) => {
     sendMessage(`${new Date().toLocaleString()} - server ${req.body.nodeId} send chunk metadata`);
     updateNodeChuckMap(req.body.chunkMap);
     console.log(`learner chunk table >>> `, nodeChunksMap);
-    res.status(200).send('ok');
+    res.status(200).send({ fileList });
 });
 
 app.post('/upload', fileUpload.single('uploadFile'), function (req, res, next) {
     handleUploadedFile(req.file.path);
-    res.send("File upload successfully");
+    // res.send("File upload successfully");
+    res.redirect('files');
 });
 
 app.post('/upload/chunk', chunkUpload.single('chunk'), function (req, res, next) {
@@ -150,7 +175,8 @@ app.post('/upload/chunk', chunkUpload.single('chunk'), function (req, res, next)
     }
 
     console.log(`nodeChunksMap >>>`, nodeChunksMap);
-    // res.send("File upload successfully");
+    updateDoc(getNodeDocName(), nodeChunksMap);
+    res.status(200).send();
 });
 
 const checkLeader = async _ => {
@@ -257,12 +283,20 @@ async function setNewLearner(id = 0) {
     try {
         let response = await axios.post(servers.get(id) + '/ping/learner', { nodeId });
         if (response.data.serverStatus === 'ok') {
-            if(response.data.isLearner){
+            if (response.data.isLearner) {
                 // learner node already exist
                 learnerId = id;
                 console.log(`leaner setup in leader node >>>`, id);
+                if (response.data.fileList && response.data.fileList.length > 0) {
+                    // response.data.fileList.forEach(chunk => {
+                    //     if (!fileList.includes(chunk.fileName)) {
+                    //         fileList.push(chunk.fileName);
+                    //     }
+                    // });
+                    fileList = response.data.fileList;
+                }
                 return;
-            }else{
+            } else {
                 servers.forEach(async (value) => await axios.post(value + '/newLearner', { idLearner: id }));
                 console.log(`set NewLearner >>>`, id);
                 io.emit('newLearner', id);
@@ -309,9 +343,8 @@ function handleUploadedFile(filePath) {
         }
 
         splitFile.splitFile(path.resolve(filePath), chunkCount)
-            .then(async (chunkNames) => {
-                console.log(chunkNames);
-
+            .then((chunkNames) => {
+                const fileName = chunkNames[ 0 ].split('/').pop().split('.sf')[ 0 ];
                 // TODO: save this map in local file or db
                 // send two chunk files for each node
                 activeNodeList.forEach((node, index) => {
@@ -321,12 +354,14 @@ function handleUploadedFile(filePath) {
                     // save chunk info in memory
                     nodeChunksMap.set(node, [
                         {
+                            fileName: fileName,
                             name: chunkNames[ firstChunkIndex ].split('/').pop(),
                             part: chunkNames[ firstChunkIndex ].split('-').pop(),
                             path: path.resolve("uploads", chunkNames[ firstChunkIndex ]),
                             hash: generateHashForChunk(path.resolve("uploads", chunkNames[ firstChunkIndex ]))
                         },
                         {
+                            fileName: fileName,
                             name: chunkNames[ secondChunkIndex ].split('/').pop(),
                             part: chunkNames[ secondChunkIndex ].split('-').pop(),
                             path: path.resolve("uploads", chunkNames[ secondChunkIndex ]),
@@ -340,8 +375,14 @@ function handleUploadedFile(filePath) {
 
                 console.log(`sending nodeChunksMap to learner ${learnerId} >>> `, nodeChunksMap);
 
-                await axios.post(servers.get(learnerId) + '/chunk/metadata', { chunkMap: mapToObj(nodeChunksMap), nodeId });
-                // TODO: handle learner node update response
+                axios.post(servers.get(learnerId) + '/chunk/metadata', { chunkMap: mapToObj(nodeChunksMap), nodeId })
+                    .then(response => {
+                        if (response.data.fileList && response.data.fileList.length > 0) {
+                            fileList = response.data.fileList;
+                            io.emit('fileUpdated', JSON.stringify(fileList));
+                            console.log(`file list updated >>> `, fileList);
+                        }
+                    });
 
             })
             .catch((err) => {
@@ -358,25 +399,72 @@ function mapToObj(map) {
     return obj;
 }
 
-function objToMap(obj) {
-    return new Map(Object.entries(obj));
-}
-
 function updateNodeChuckMap(obj) {
     for (const [ key, value ] of Object.entries(obj)) {
         if (nodeChunksMap.has(key)) {
             const nodeFiles = nodeChunksMap.get(key);
-            nodeChunksMap.set(key, [...nodeFiles, ...value])
-        }else{
+            nodeChunksMap.set(key, [ ...nodeFiles, ...value ]);
+        } else {
             nodeChunksMap.set(key, value);
         }
     }
+    updateFileList();
+    updateDoc(getNodeDocName(), nodeChunksMap);
 }
 
 function generateHashForChunk(filePath) {
     const fileData = fs.readFileSync(filePath);
     console.log(fileData);
     return CryptoJS.MD5(fileData).toString();
+}
+
+function getNodeDocName() {
+    return (nodeId == learnerId) ? `learner-doc.txt` : `node-${nodeId}-doc.txt`;
+}
+
+function updateChuckMapFromNodeDoc() {
+    if (nodeId != leaderId) {
+        const docName = getNodeDocName();
+        const dataMap = readDoc(docName);
+        nodeChunksMap = dataMap;
+        console.log(`update nodeChunksMap with ${docName} doc >>>`);
+
+        if (nodeId == learnerId) {
+            updateFileList();
+        }
+    }
+}
+
+function readDoc(docName) {
+    console.log(`reading ${docName} doc >>>`);
+    try {
+        const dataObjString = fs.readFileSync(path.resolve("docs", docName));
+        const dataObj = JSON.parse(dataObjString);
+        const dataMap = new Map();
+        for (const [ key, value ] of Object.entries(dataObj)) {
+            dataMap.set(key, value);
+        }
+        return dataMap;
+    } catch (error) {
+        return new Map();
+    }
+}
+
+function updateDoc(docName, dataMap) {
+    fs.writeFileSync(path.resolve("docs", docName), JSON.stringify(mapToObj(dataMap)));
+    console.log(`updated ${docName} doc >>>`, dataMap);
+}
+
+function updateFileList() {
+    if (nodeChunksMap) {
+        nodeChunksMap.forEach(node => {
+            node.forEach(chunk => {
+                if (!fileList.includes(chunk.fileName)) {
+                    fileList.push(chunk.fileName);
+                }
+            });
+        });
+    }
 }
 
 function sendFileToNode(nodeAddress, chunkPath) {
@@ -401,11 +489,9 @@ function sendFileToNode(nodeAddress, chunkPath) {
 }
 
 io.on('connection', (socket) => {
-    socket.on('kill', () => {
-        sendMessage(`${new Date().toLocaleString()} - Not a leader anymore`);
-        status = 'fail';
-        isUP = false;
-        isCoordinator = false;
+    socket.on('download', (fileName) => {
+        sendMessage(`${new Date().toLocaleString()} - requesting file ${fileName} from learner node ${learnerId}`);
+
     });
 });
 
@@ -413,3 +499,5 @@ server.listen(addresses[ baseIndexServer ].port, addresses[ baseIndexServer ].ho
 console.log(`App listening on http://${addresses[ baseIndexServer ].host}:${addresses[ baseIndexServer ].port}`);
 
 setTimeout(checkLeader, 3000);
+
+updateChuckMapFromNodeDoc();
