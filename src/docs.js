@@ -9,6 +9,7 @@ const generateHashForChunk = function (filePath) {
     const fileData = fs.readFileSync(filePath);
     return CryptoJS.MD5(fileData).toString();
 };
+exports.generateHash = generateHashForChunk;
 
 exports.getChunkDocData = function (chunkFilePath) {
     const fileName = chunkFilePath.split('/').pop().split('.sf')[ 0 ];

@@ -18,4 +18,4 @@ html(lang='en')
                     if fileList && fileList.length > 0
                         each file in fileList
                             li= file
-                                 button(type='button' class='btn btn-link' onclick='downloadFile()') Download
+                                 button(type='button' class='btn btn-link' onclick=`downloadFile("${file}")`) Download

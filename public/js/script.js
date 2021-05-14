@@ -36,11 +36,21 @@ socket.on('fileUpdated', (fileListString) => {
     }
 });
 
+socket.on('chunkListReceived', (chunkListString) => {
+    try {
+        let fileList = JSON.parse(chunkListString);
+        alert(chunkListString);
+    } catch (error) {
+        console.error(`cannot find updated chunk list`, error)
+    }
+});
+
 socket.on('disconnect', () => {
     socket.close();
     console.log('Socket connection closed!');
 });
 
 function downloadFile(fileName) {
-    socket.emit('downloadFile', fileName);
+    alert(fileName);
+    socket.emit('download', fileName);
 }
