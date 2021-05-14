@@ -21,9 +21,8 @@ let nodeId = utils.getId(addresses[ baseIndexServer ].port);
 let leaderId = utils.getId(Math.max(...calculateLeader()));
 let learnerId = utils.getId(Math.min(...calculateLeader()));
 let status = 'ok';
-let isCoordinator = true;
-let isUP = true;
 let check = 'on';
+let isCoordinator = true;
 let nodeChunksMap = new Map();
 let fileList = [];
 
@@ -66,7 +65,11 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // routes
 app.get('/', function (req, res) {
-    res.render('index', { nodeId, idLeader: leaderId, idLearner: learnerId });
+    if (nodeId == leaderId) {
+        res.render('index', { nodeId, idLeader: leaderId, idLearner: learnerId });
+    } else {
+        res.redirect(`http://${addresses[ leaderId ].host}:${addresses[ leaderId ].port}`);
+    }
 });
 
 app.get('/files', function (req, res) {
@@ -107,13 +110,8 @@ app.post('/isCoordinator', (req, res) => {
 
 app.post('/election', (req, res) => {
     utils.handleRequest(req);
-    if (!isUP) {
-        utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} fallen leader`);
-        res.status(200).send({ accept: 'no' });
-    } else {
-        utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} asked me if I am down, and I am not , I win, that is bullying`);
-        res.status(200).send({ accept: 'ok' });
-    }
+    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} asked me if I am down, and I am not , I win, that is bullying`);
+    res.status(200).send({ accept: 'ok' });
 });
 
 app.post('/putCoordinator', (req, res) => {
@@ -178,9 +176,6 @@ app.post('/upload/chunk', chunkUpload.single('chunk'), function (req, res, next)
 
 // server functions
 const checkLeader = async _ => {
-    if (!isUP) {
-        check = 'off';
-    }
     if (nodeId !== leaderId && check !== 'off') {
         try {
             let response = await axios.post(servers.get(leaderId) + '/ping', { nodeId });
@@ -218,9 +213,7 @@ const checkCoordinator = _ => {
         }
     });
 
-    if (isUP) {
-        startElection();
-    }
+    startElection();
 };
 
 const startElection = _ => {
