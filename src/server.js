@@ -89,6 +89,11 @@ app.get('/learner/files', function (req, res) {
     }
 });
 
+app.get('/leader', function (req, res) {
+    utils.handleRequest(req);
+    res.status(200).send({ leaderId });
+});
+
 app.post('/ping', (req, res) => {
     utils.handleRequest(req);
     utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} it's pinging me`);
@@ -118,7 +123,7 @@ app.post('/election', (req, res) => {
 app.post('/putCoordinator', (req, res) => {
     utils.handleRequest(req);
     startElection();
-    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} put me as coordinator`);
+    utils.printLog('info', ` server ${req.body.nodeId} put me as coordinator`);
     res.status(200).send('ok');
 });
 
@@ -173,6 +178,15 @@ app.post('/chunk/list', (req, res) => {
     }
     utils.handleRequest(req);
     utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} send file chunks list`);
+
+    // refactor response
+    req.body.chunks.forEach(chunk => {
+        chunk.public_url = chunk.node + '/' + chunk.path;
+        delete chunk[ 'hash' ];
+        delete chunk[ 'node' ];
+        delete chunk[ 'path' ];
+    });
+
     console.log('chunkList >>>', req.body.chunks);
     io.emit('chunkListReceived', JSON.stringify(req.body.chunks));
     res.status(200).send();
@@ -209,7 +223,6 @@ const checkLeader = async _ => {
     if (nodeId !== leaderId && check !== 'off') {
         try {
             let response = await axios.post(servers.get(leaderId) + '/ping', { nodeId });
-
             if (response.data.serverStatus === 'ok') {
                 utils.sendMessage(io, `${new Date().toLocaleString()} - Ping to leader server ${leaderId}: ${response.data.serverStatus}`);
                 setTimeout(checkLeader, 12000);
@@ -219,7 +232,6 @@ const checkLeader = async _ => {
             }
         }
         catch (error) {
-            utils.sendMessage(io, `${new Date().toLocaleString()} - Server leader  ${leaderId} down: New leader needed`);
             utils.printLog('error', `leader ${leaderId} down, new leader needed`);
             checkCoordinator();
         }
@@ -249,7 +261,7 @@ const checkCoordinator = _ => {
 const startElection = _ => {
     let someoneAnswer = false;
     isCoordinator = true;
-    utils.sendMessage(io, `${new Date().toLocaleString()} - Coordinating the election`);
+    utils.printLog('success', `I am coordinating the election`);
 
     servers.forEach(async (value, key) => {
         if (key > nodeId) {
@@ -258,7 +270,8 @@ const startElection = _ => {
                 if (response.data.accept === 'ok' && !someoneAnswer) {
                     someoneAnswer = true;
                     isCoordinator = false;
-                    await axios.post(value + '/putCoordinator', { nodeId });
+                    utils.printLog('success', `set node ${key} as coordinator`);
+                    await axios.post(value + '/putCoordinator', { key });
                 }
             }
             catch (error) {
@@ -270,9 +283,13 @@ const startElection = _ => {
     setTimeout(() => {
         if (!someoneAnswer) {
             leaderId = nodeId;
-            utils.sendMessage(io, `${new Date().toLocaleString()} - I am leader`);
             io.emit('newLeader', leaderId);
-            servers.forEach(async (value) => await axios.post(value + '/newLeader', { idLeader: leaderId }));
+            utils.printLog('success', `set myself as the leader`);
+            try {
+                servers.forEach(async (value) => await axios.post(value + '/newLeader', { idLeader: leaderId }));
+            } catch (error) {
+                // send errors witch servers are not active
+            }
             setNewLearner();
         }
     }, 5000);
@@ -296,11 +313,6 @@ async function setNewLearner(id = 0) {
                 learnerId = id;
                 utils.printLog('info', `accept already exist learner node ${key}`);
                 if (response.data.fileList && response.data.fileList.length > 0) {
-                    // response.data.fileList.forEach(chunk => {
-                    //     if (!fileList.includes(chunk.fileName)) {
-                    //         fileList.push(chunk.fileName);
-                    //     }
-                    // });
                     fileList = response.data.fileList;
                 }
                 return;
@@ -312,7 +324,7 @@ async function setNewLearner(id = 0) {
             }
         }
     } catch (error) {
-        utils.printLog('info', `reject leaner request from node ${learnerId}`);
+        // utils.printLog('info', `reject leaner request from node ${learnerId}`);
         if ((id + 1) < leaderId) setNewLearner(id + 1);
     }
 }
@@ -496,7 +508,11 @@ function updateFileList() {
 io.on('connection', (socket) => {
     socket.on('download', (fileName) => {
         utils.printLog('info', `requesting file ${fileName} from learner node ${learnerId}`);
-        servers.forEach(async (value) => await axios.post(value + '/chunk/request', { nodeId, fileName }));
+        try {
+            servers.forEach(async (value) => await axios.post(value + '/chunk/request', { nodeId, fileName }));
+        } catch (error) {
+            // INFO: inactive node will return errors
+        }
     });
 });
 
