@@ -5,7 +5,11 @@ socket.on('status', (message) => {
     let li = document.createElement("li");
     li.className = "list-group-item";
     li.appendChild(content);
-    document.getElementById('log-list').appendChild(li);
+    try {        
+        document.getElementById('log-list').appendChild(li);
+    } catch (error) {
+        // no element here.
+    }
 });
 
 socket.on('newLeader', (leaderId) => {
@@ -36,11 +40,21 @@ socket.on('fileUpdated', (fileListString) => {
     }
 });
 
+socket.on('chunkListReceived', (chunkListString) => {
+    try {
+        let fileList = JSON.parse(chunkListString);
+        console.log(`received file chunk list >>> `, fileList)
+    } catch (error) {
+        console.error(`cannot find updated chunk list`, error)
+    }
+});
+
 socket.on('disconnect', () => {
     socket.close();
     console.log('Socket connection closed!');
 });
 
 function downloadFile(fileName) {
-    socket.emit('downloadFile', fileName);
+    console.log(`send download request to file`, fileName)
+    socket.emit('download', fileName);
 }

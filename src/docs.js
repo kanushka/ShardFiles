@@ -2,13 +2,14 @@
 
 var fs = require('fs');
 const path = require('path');
-const CryptoJS = require("crypto-js");
 const utils = require('./utils');
+const md5File = require('md5-file');
 
 const generateHashForChunk = function (filePath) {
-    const fileData = fs.readFileSync(filePath);
-    return CryptoJS.MD5(fileData).toString();
+    const hash = md5File.sync(filePath);
+    return hash;
 };
+exports.generateHash = generateHashForChunk;
 
 exports.getChunkDocData = function (chunkFilePath) {
     const fileName = chunkFilePath.split('/').pop().split('.sf')[ 0 ];

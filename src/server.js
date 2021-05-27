@@ -24,6 +24,7 @@ let status = 'ok';
 let check = 'on';
 let isCoordinator = true;
 let nodeChunksMap = new Map();
+let requestFileChunkMap = new Map();
 let fileList = [];
 
 // storage configurations
@@ -68,7 +69,7 @@ app.get('/', function (req, res) {
     if (nodeId == leaderId) {
         res.render('index', { nodeId, idLeader: leaderId, idLearner: learnerId });
     } else {
-        res.redirect(`http://${addresses[ leaderId ].host}:${addresses[ leaderId ].port}`);
+        res.redirect(servers.get(leaderId));
     }
 });
 
@@ -86,6 +87,11 @@ app.get('/learner/files', function (req, res) {
     } else {
         res.status(403).send({ error: 'im not a learner' });
     }
+});
+
+app.get('/leader', function (req, res) {
+    utils.handleRequest(req);
+    res.status(200).send({ leaderId });
 });
 
 app.post('/ping', (req, res) => {
@@ -117,7 +123,7 @@ app.post('/election', (req, res) => {
 app.post('/putCoordinator', (req, res) => {
     utils.handleRequest(req);
     startElection();
-    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} put me as coordinator`);
+    utils.printLog('info', ` server ${req.body.nodeId} put me as coordinator`);
     res.status(200).send('ok');
 });
 
@@ -144,8 +150,46 @@ app.post('/chunk/metadata', (req, res) => {
     utils.handleRequest(req);
     utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} send chunk metadata`);
     updateNodeChuckMap(req.body.chunkMap);
-    console.log(`learner chunk table >>> `, nodeChunksMap);
     res.status(200).send({ fileList });
+});
+
+app.post('/chunk/request', (req, res) => {
+    if (nodeId === learnerId) res.status(404).send();
+
+    utils.handleRequest(req);
+    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} request ${req.body.fileName} chunk info`);
+    findFileChunks(req.body.fileName);
+    res.status(200).send();
+});
+
+app.post('/chunk/validate', (req, res) => {
+    if (nodeId != learnerId) {
+        res.status(404); // only learner will validate md5 hashes
+    }
+    utils.handleRequest(req);
+    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} request to validate ${req.body.fileName} file chunks`);
+    validateChunks(req.body.nodeId, req.body.fileName, req.body.chunks);
+    res.status(200).send();
+});
+
+app.post('/chunk/list', (req, res) => {
+    if (nodeId != leaderId) {
+        res.status(404); // only learner will validate md5 hashes
+    }
+    utils.handleRequest(req);
+    utils.sendMessage(io, `${new Date().toLocaleString()} - server ${req.body.nodeId} send file chunks list`);
+
+    // refactor response
+    req.body.chunks.forEach(chunk => {
+        chunk.public_url = chunk.node + '/' + chunk.path;
+        delete chunk[ 'hash' ];
+        delete chunk[ 'node' ];
+        delete chunk[ 'path' ];
+    });
+
+    console.log('chunkList >>>', req.body.chunks);
+    io.emit('chunkListReceived', JSON.stringify(req.body.chunks));
+    res.status(200).send();
 });
 
 app.post('/upload', fileUpload.single('uploadFile'), function (req, res, next) {
@@ -155,7 +199,7 @@ app.post('/upload', fileUpload.single('uploadFile'), function (req, res, next) {
 
 app.post('/upload/chunk', chunkUpload.single('chunk'), function (req, res, next) {
     const fileName = req.file.originalname;
-    const key = fileName.split('-')[ 0 ];
+    const key = fileName.split('.sf')[ 0 ];
     const chunkInfo = {
         name: fileName,
         part: fileName.split('-').pop(),
@@ -179,7 +223,6 @@ const checkLeader = async _ => {
     if (nodeId !== leaderId && check !== 'off') {
         try {
             let response = await axios.post(servers.get(leaderId) + '/ping', { nodeId });
-
             if (response.data.serverStatus === 'ok') {
                 utils.sendMessage(io, `${new Date().toLocaleString()} - Ping to leader server ${leaderId}: ${response.data.serverStatus}`);
                 setTimeout(checkLeader, 12000);
@@ -189,7 +232,6 @@ const checkLeader = async _ => {
             }
         }
         catch (error) {
-            utils.sendMessage(io, `${new Date().toLocaleString()} - Server leader  ${leaderId} down: New leader needed`);
             utils.printLog('error', `leader ${leaderId} down, new leader needed`);
             checkCoordinator();
         }
@@ -219,7 +261,7 @@ const checkCoordinator = _ => {
 const startElection = _ => {
     let someoneAnswer = false;
     isCoordinator = true;
-    utils.sendMessage(io, `${new Date().toLocaleString()} - Coordinating the election`);
+    utils.printLog('success', `I am coordinating the election`);
 
     servers.forEach(async (value, key) => {
         if (key > nodeId) {
@@ -228,7 +270,8 @@ const startElection = _ => {
                 if (response.data.accept === 'ok' && !someoneAnswer) {
                     someoneAnswer = true;
                     isCoordinator = false;
-                    await axios.post(value + '/putCoordinator', { nodeId });
+                    utils.printLog('success', `set node ${key} as coordinator`);
+                    await axios.post(value + '/putCoordinator', { key });
                 }
             }
             catch (error) {
@@ -240,9 +283,13 @@ const startElection = _ => {
     setTimeout(() => {
         if (!someoneAnswer) {
             leaderId = nodeId;
-            utils.sendMessage(io, `${new Date().toLocaleString()} - I am leader`);
             io.emit('newLeader', leaderId);
-            servers.forEach(async (value) => await axios.post(value + '/newLeader', { idLeader: leaderId }));
+            utils.printLog('success', `set myself as the leader`);
+            try {
+                servers.forEach(async (value) => await axios.post(value + '/newLeader', { idLeader: leaderId }));
+            } catch (error) {
+                // send errors witch servers are not active
+            }
             setNewLearner();
         }
     }, 5000);
@@ -266,11 +313,6 @@ async function setNewLearner(id = 0) {
                 learnerId = id;
                 utils.printLog('info', `accept already exist learner node ${key}`);
                 if (response.data.fileList && response.data.fileList.length > 0) {
-                    // response.data.fileList.forEach(chunk => {
-                    //     if (!fileList.includes(chunk.fileName)) {
-                    //         fileList.push(chunk.fileName);
-                    //     }
-                    // });
                     fileList = response.data.fileList;
                 }
                 return;
@@ -282,7 +324,7 @@ async function setNewLearner(id = 0) {
             }
         }
     } catch (error) {
-        utils.printLog('info', `reject leaner request from node ${learnerId}`);
+        // utils.printLog('info', `reject leaner request from node ${learnerId}`);
         if ((id + 1) < leaderId) setNewLearner(id + 1);
     }
 }
@@ -382,6 +424,62 @@ function updateNodeChuckMap(obj) {
     docs.updateDoc(utils.getNodeDocName(nodeId, learnerId), nodeChunksMap);
 }
 
+function findFileChunks(fileName) {
+    if (nodeChunksMap.has(fileName)) {
+        // found file chunks
+        const chunks = nodeChunksMap.get(fileName);
+        // generate md5hash for each chunk
+        chunks.forEach(chunk => {
+            const hash = docs.generateHash(path.resolve(chunk.path));
+            chunk.hash = hash;
+        });
+        console.log(`chuks send to learner >>>`, chunks);
+        axios.post(servers.get(learnerId) + '/chunk/validate', { nodeId, fileName, chunks });
+    }
+}
+
+function validateChunks(node, fileName, nodeChunks) {
+    const nodeAddress = servers.get(node);
+    if (nodeChunksMap.has(nodeAddress)) {
+        // found file chunks
+        const realChunks = nodeChunksMap.get(nodeAddress).filter(chunk => chunk.fileName === fileName);
+        console.log(`realChunks in node ${node} >>>`, realChunks);
+        realChunks.forEach(chunk => {
+            const validChunk = nodeChunks.find(part => (part.name === chunk.name) && (part.hash === chunk.hash));
+            if (validChunk) {
+                chunk.isValid = true;
+                if (requestFileChunkMap.has(fileName)) {
+                    const fileChunks = requestFileChunkMap.get(fileName);
+                    const availableChunk = fileChunks.find(part => part.name === chunk.name);
+                    if (!availableChunk) {
+                        // if no available chunk then add new one
+                        fileChunks.push({
+                            ...validChunk,
+                            node: nodeAddress,
+                        });
+                        requestFileChunkMap.set(fileName, fileChunks);
+                    }
+                } else {
+                    requestFileChunkMap.set(fileName, [ {
+                        ...validChunk,
+                        node: nodeAddress,
+                    } ]);
+                }
+            }
+        });
+
+        // check chunk validity and send to leader
+        setTimeout(() => {
+            if (requestFileChunkMap.has(fileName)) {
+                console.log(`requestFileChunkMap >>>`, requestFileChunkMap);
+                const chunks = requestFileChunkMap.get(fileName);
+                axios.post(servers.get(leaderId) + '/chunk/list', { fileName, chunks });
+                requestFileChunkMap.delete(fileName);
+            }
+        }, 5000);
+    }
+}
+
 function updateChuckMapFromNodeDoc() {
     if (nodeId != leaderId) {
         const docName = utils.getNodeDocName(nodeId, learnerId);
@@ -409,8 +507,12 @@ function updateFileList() {
 // socket connection
 io.on('connection', (socket) => {
     socket.on('download', (fileName) => {
-        utils.sendMessage(io, `${new Date().toLocaleString()} - requesting file ${fileName} from learner node ${learnerId}`);
-
+        utils.printLog('info', `requesting file ${fileName} from learner node ${learnerId}`);
+        try {
+            servers.forEach(async (value) => await axios.post(value + '/chunk/request', { nodeId, fileName }));
+        } catch (error) {
+            // INFO: inactive node will return errors
+        }
     });
 });
 
